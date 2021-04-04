@@ -93,6 +93,56 @@ Vector IR2Vec_FA::getValue(std::string key) {
   return vec;
 }
 
+void IR2Vec_FA::traverseRD(
+    const llvm::Instruction *inst,
+    std::vector<std::pair<const llvm::Instruction *, bool>> &Visited,
+    llvm::SmallVector<const llvm::Instruction *, 10> &InstStack,
+    const llvm::Instruction *parent,
+    llvm::DenseMap<const llvm::Instruction *, const llvm::Instruction *>
+        parentMap) {
+
+  Visited.push_back(std::make_pair(inst, true));
+  auto RD = instReachingDefsMap[inst];
+
+  InstStack.push_back(inst);
+  parentMap[inst] = parent;
+
+  for (auto defs : RD) {
+    auto f = std::make_pair(defs, true);
+    if (std::find(Visited.begin(), Visited.end(), f) == Visited.end())
+      traverseRD(defs, Visited, InstStack, inst, parentMap);
+    else if (std::find(InstStack.begin(), InstStack.end(), defs) !=
+             InstStack.end()) {
+      llvm::SmallVector<const llvm::Instruction *, 10> instCycle;
+      instCycle.push_back(defs);
+      auto currInst = inst;
+      instCycle.push_back(currInst);
+      while (parentMap[currInst] != defs) {
+        currInst = parentMap[currInst];
+        instCycle.push_back(currInst);
+      }
+      depCycles.push_back(instCycle);
+    }
+  }
+  auto it = std::find(InstStack.begin(), InstStack.end(), inst);
+  InstStack.erase(it);
+}
+
+void IR2Vec_FA::getAllCycles() {
+  std::vector<std::pair<const llvm::Instruction *, bool>> Visited(
+      instReachingDefsMap.size());
+  llvm::SmallVector<const llvm::Instruction *, 10> InstStack;
+  llvm::DenseMap<const llvm::Instruction *, const llvm::Instruction *>
+      parentMap;
+
+  for (auto &I : instReachingDefsMap) {
+    auto f = std::make_pair(I.first, true);
+    if (std::find(Visited.begin(), Visited.end(), f) == Visited.end()) {
+      traverseRD(I.first, Visited, InstStack, nullptr, parentMap);
+    }
+  }
+}
+
 void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
                                            std::ostream *missCount,
                                            std::ostream *cyclicCount) {
@@ -106,48 +156,41 @@ void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
         for (int i = 0; i < I.getNumOperands(); i++) {
           if (isa<Instruction>(I.getOperand(i))) {
             auto RD = getReachingDefs(&I, i);
-            instReachingDefsPair.push_back(std::make_pair(&I, RD));
+            instReachingDefsMap[&I] = RD;
           }
         }
       }
     }
   }
 
-  // Sorting the reaching defs pair according to the size of the RD vector
-  // TO-DO: Change this to sorting for length of the cylces
-  std::sort(
-      instReachingDefsPair.begin(), instReachingDefsPair.begin(),
-      [](const std::pair<const llvm::Instruction *,
-                         llvm::SmallVector<const llvm::Instruction *, 10>>
-             &left,
-         const std::pair<const llvm::Instruction *,
-                         llvm::SmallVector<const llvm::Instruction *, 10>>
-             &right) { return left.second.size() < right.second.size(); });
+  for (auto &Inst : instReachingDefsMap) {
+    auto RD = Inst.second;
+    for (auto defs : RD)
+      outs() << "RD: " << defs << " ";
+    outs() << "\n";
+  }
+
+  // Getting all dependency cycles
+  getAllCycles();
+
+  // Sorting the dependency cycles according to the size of the cycle length
+  std::sort(depCycles.begin(), depCycles.end(),
+            [](llvm::SmallVector<const llvm::Instruction *, 10> &a,
+               llvm::SmallVector<const llvm::Instruction *, 10> &b) {
+              return a.size() < b.size();
+            });
+
+  for (auto &cycle : depCycles) {
+    for (auto &def : cycle) {
+      outs() << def << " ";
+    }
+    outs() << "\n";
+  }
 
   // Getting Dependecies
   // TO-DO : Change this to a traversal for finding any k -length cyles
 
-  for (auto &inst : instReachingDefsPair) {
-    // get the RD for the particular instructions
-    auto currInstRD = inst.second;
-    for (auto &nextInst : instReachingDefsPair) {
-      if (inst.first == nextInst.first)
-        continue;
-      // getting the RD of all the other instrunctions
-      auto nextInstRD = nextInst.second;
-      if (std::find(nextInstRD.begin(), nextInstRD.end(), inst.first) !=
-          nextInstRD.end()) {
-        if (std::find(currInstRD.begin(), currInstRD.end(), nextInst.first) !=
-            currInstRD.end()) {
-          // The current instruction and next instructions are dependent on each
-          // other
-          instDependencies[inst.first].push_back(nextInst.first);
-        }
-      }
-    }
-  }
-
-  int noOfFunc = 0;
+  /*int noOfFunc = 0;
 
   for (auto &f : M) {
     if (!f.isDeclaration()) {
@@ -219,7 +262,7 @@ void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
 
   if (cyclicCount)
     *cyclicCount << (M.getSourceFileName() + "\t" +
-                     std::to_string(cyclicCounter) + "\n");
+                     std::to_string(cyclicCounter) + "\n");*/
 }
 
 Vector IR2Vec_FA::func2Vec(Function &F,
@@ -261,6 +304,59 @@ Vector IR2Vec_FA::func2Vec(Function &F,
   funcStack.pop_back();
   funcVecMap[&F] = funcVector;
   return funcVector;
+}
+
+void IR2Vec_FA::solveCyclicDeps(
+    SmallMapVector<const Instruction *, Vector, 16> partialInstValMap) {
+  std::map<unsigned, const Instruction *> xI;
+  std::map<const Instruction *, unsigned> Ix;
+  std::vector<std::vector<double>> A, B;
+  SmallMapVector<const Instruction *,
+                 SmallMapVector<const Instruction *, double, 16>, 16>
+      RDValMap;
+  unsigned pos = 0;
+  for (auto It : partialInstValMap) {
+    auto inst = It.first;
+    if (instVecMap.find(inst) == instVecMap.end()) {
+      Ix[inst] = pos;
+      xI[pos++] = inst;
+      std::vector<double> tmp;
+      for (auto i : It.second) {
+        tmp.push_back((int)(i * 10) / 10.0);
+      }
+      B.push_back(tmp);
+    }
+  }
+
+  for (unsigned i = 0; i < xI.size(); i++) {
+    std::vector<double> tmp(xI.size(), 0);
+    A.push_back(tmp);
+  }
+
+  for (unsigned i = 0; i < xI.size(); i++) {
+    A[i][i] = 1;
+    auto tmp = A[i];
+    auto instRDVal = RDValMap[xI[i]];
+    for (auto j : instRDVal) {
+      A[i][Ix[j.first]] = (int)((A[i][Ix[j.first]] - j.second) * 10) / 10.0;
+    }
+  }
+
+  auto C = solve(A, B);
+  SmallMapVector<const BasicBlock *, SmallVector<const Instruction *, 10>, 16>
+      bbInstMap;
+  for (unsigned i = 0; i < C.size(); i++) {
+    Vector tmp(C[i].begin(), C[i].end());
+    IR2VEC_DEBUG(outs() << "inst:"
+                        << "\t";
+                 xI[i]->print(outs()); outs() << "\nVAL: " << tmp[0] << "\n");
+
+    instVecMap[xI[i]] = tmp;
+    livelinessMap.try_emplace(xI[i], true);
+
+    instSolvedBySolver.push_back(xI[i]);
+    bbInstMap[xI[i]->getParent()].push_back(xI[i]);
+  }
 }
 
 // LoopInfo contains a mapping from basic block to the innermost loop. Find
