@@ -98,6 +98,55 @@ void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
                                            std::ostream *cyclicCount) {
   collectWriteDefsMap(M);
 
+  // Getting The Reaching defs for all Instructions
+
+  for (auto &f : M) {
+    for (auto &bb : f) {
+      for (auto &I : bb) {
+        for (int i = 0; i < I.getNumOperands(); i++) {
+          if (isa<Instruction>(I.getOperand(i))) {
+            auto RD = getReachingDefs(&I, i);
+            instReachingDefsPair.push_back(std::make_pair(&I, RD));
+          }
+        }
+      }
+    }
+  }
+
+  // Sorting the reaching defs pair according to the size of the RD vector
+  // TO-DO: Change this to sorting for length of the cylces
+  std::sort(
+      instReachingDefsPair.begin(), instReachingDefsPair.begin(),
+      [](const std::pair<const llvm::Instruction *,
+                         llvm::SmallVector<const llvm::Instruction *, 10>>
+             &left,
+         const std::pair<const llvm::Instruction *,
+                         llvm::SmallVector<const llvm::Instruction *, 10>>
+             &right) { return left.second.size() < right.second.size(); });
+
+  // Getting Dependecies
+  // TO-DO : Change this to a traversal for finding any k -length cyles
+
+  for (auto &inst : instReachingDefsPair) {
+    // get the RD for the particular instructions
+    auto currInstRD = inst.second;
+    for (auto &nextInst : instReachingDefsPair) {
+      if (inst.first == nextInst.first)
+        continue;
+      // getting the RD of all the other instrunctions
+      auto nextInstRD = nextInst.second;
+      if (std::find(nextInstRD.begin(), nextInstRD.end(), inst.first) !=
+          nextInstRD.end()) {
+        if (std::find(currInstRD.begin(), currInstRD.end(), nextInst.first) !=
+            currInstRD.end()) {
+          // The current instruction and next instructions are dependent on each
+          // other
+          instDependencies[inst.first].push_back(nextInst.first);
+        }
+      }
+    }
+  }
+
   int noOfFunc = 0;
 
   for (auto &f : M) {

@@ -40,6 +40,15 @@ private:
                        llvm::SmallVector<const llvm::Instruction *, 10>, 16>
       writeDefsMap;
 
+  llvm::SmallVector<std::pair<const llvm::Instruction *,
+                              llvm::SmallVector<const llvm::Instruction *, 10>>,
+                    16>
+      instReachingDefsPair;
+
+  llvm::SmallMapVector<const llvm::Instruction *,
+                       llvm::SmallVector<const llvm::Instruction *, 10>, 16>
+      instDependencies;
+
   llvm::SmallVector<const llvm::Instruction *, 20> instSolvedBySolver;
 
   IR2Vec::Vector getValue(std::string key);
