@@ -77,6 +77,14 @@ private:
                 llvm::SmallMapVector<const llvm::Instruction *, IR2Vec::Vector,
                                      16> &instValMap);
 
+  void inst2Vec(const llvm::Instruction &I,
+                llvm::SmallMapVector<const llvm::Instruction *, IR2Vec::Vector,
+                                     16> &instValMap);
+
+  void solveCyclicDeps(
+      llvm::SmallMapVector<const llvm::Instruction *, IR2Vec::Vector, 16>
+          partialInstValMap);
+
   void bb2Vec(llvm::BasicBlock &B,
               llvm::SmallVector<llvm::Function *, 15> &funcStack);
   IR2Vec::Vector func2Vec(llvm::Function &F,
