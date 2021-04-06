@@ -96,50 +96,88 @@ Vector IR2Vec_FA::getValue(std::string key) {
 void IR2Vec_FA::traverseRD(
     const llvm::Instruction *inst,
     std::vector<std::pair<const llvm::Instruction *, bool>> &Visited,
-    llvm::SmallVector<const llvm::Instruction *, 10> &InstStack,
-    const llvm::Instruction *parent,
-    llvm::DenseMap<const llvm::Instruction *, const llvm::Instruction *>
-        parentMap) {
+    llvm::SmallVector<const llvm::Instruction *, 10> &timeStack) {
 
   Visited.push_back(std::make_pair(inst, true));
   auto RD = instReachingDefsMap[inst];
 
-  InstStack.push_back(inst);
-  parentMap[inst] = parent;
-
   for (auto defs : RD) {
     auto f = std::make_pair(defs, true);
     if (std::find(Visited.begin(), Visited.end(), f) == Visited.end())
-      traverseRD(defs, Visited, InstStack, inst, parentMap);
-    else if (std::find(InstStack.begin(), InstStack.end(), defs) !=
-             InstStack.end()) {
-      // Present in Visited and also in InstStack => Cycle
-      llvm::SmallVector<const llvm::Instruction *, 10> instCycle;
-      instCycle.push_back(defs);
-      auto currInst = inst;
-      instCycle.push_back(currInst);
-      while (parentMap[currInst] != defs) {
-        currInst = parentMap[currInst];
-        instCycle.push_back(currInst);
-      }
-      depCycles.push_back(instCycle);
-    }
+      traverseRD(defs, Visited, timeStack);
   }
-  auto it = std::find(InstStack.begin(), InstStack.end(), inst);
-  InstStack.erase(it);
+  // All the children (RDs) of current node is done push to timeStack
+  timeStack.push_back(inst);
 }
 
-void IR2Vec_FA::getAllCycles() {
+void DFSUtil(
+    const llvm::Instruction *inst,
+    std::vector<std::pair<const llvm::Instruction *, bool>> &Visited,
+    llvm::SmallMapVector<const llvm::Instruction *,
+                         llvm::SmallVector<const llvm::Instruction *, 10>, 16>
+        reverseReachingDefsMap,
+    llvm::SmallVector<const llvm::Instruction *, 10> &set) {
+
+  Visited.push_back(std::make_pair(inst, true));
+  auto RD = reverseReachingDefsMap[inst];
+
+  for (auto defs : RD) {
+    auto f = std::make_pair(defs, true);
+    if (std::find(Visited.begin(), Visited.end(), f) == Visited.end()) {
+      set.push_back(defs);
+      DFSUtil(defs, Visited, reverseReachingDefsMap, set);
+    }
+  }
+}
+
+void IR2Vec_FA::getAllSCC() {
   std::vector<std::pair<const llvm::Instruction *, bool>> Visited(
       instReachingDefsMap.size());
-  llvm::SmallVector<const llvm::Instruction *, 10> InstStack;
-  llvm::DenseMap<const llvm::Instruction *, const llvm::Instruction *>
-      parentMap;
+  llvm::SmallVector<const llvm::Instruction *, 10> timeStack;
 
   for (auto &I : instReachingDefsMap) {
     auto f = std::make_pair(I.first, true);
     if (std::find(Visited.begin(), Visited.end(), f) == Visited.end()) {
-      traverseRD(I.first, Visited, InstStack, nullptr, parentMap);
+      traverseRD(I.first, Visited, timeStack);
+    }
+  }
+
+  // for (auto &defs : timeStack) {
+  //   outs() << defs << "\n";
+  // }
+
+  // Reversing instReachingDefsMap
+  llvm::SmallMapVector<const llvm::Instruction *,
+                       llvm::SmallVector<const llvm::Instruction *, 10>, 16>
+      reverseReachingDefsMap;
+
+  for (auto &I : instReachingDefsMap) {
+    auto RD = I.second;
+    for (auto defs : RD) {
+      if (reverseReachingDefsMap.find(defs) == reverseReachingDefsMap.end()) {
+        llvm::SmallVector<const llvm::Instruction *, 10> revDefs;
+        revDefs.push_back(I.first);
+        reverseReachingDefsMap[defs] = revDefs;
+      } else {
+        auto defVector = reverseReachingDefsMap[defs];
+        defVector.push_back(I.first);
+        reverseReachingDefsMap[defs] = defVector;
+      }
+    }
+  }
+
+  Visited.clear();
+  // Second pass getting SCCs
+  while (timeStack.size() != 0) {
+    auto inst = timeStack.back();
+    timeStack.pop_back();
+    auto f = std::make_pair(inst, true);
+    if (std::find(Visited.begin(), Visited.end(), f) == Visited.end()) {
+      llvm::SmallVector<const llvm::Instruction *, 10> set;
+      set.push_back(inst);
+      DFSUtil(inst, Visited, reverseReachingDefsMap, set);
+      if (set.size() != 0)
+        allSCCs.push_back(set);
     }
   }
 }
@@ -164,56 +202,76 @@ void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
     }
   }
 
-  // for (auto &Inst : instReachingDefsMap) {
-  //   auto RD = Inst.second;
-  //   for (auto defs : RD)
-  //     outs() << "RD: " << defs << " ";
-  //   outs() << "\n";
-  // }
+  outs() << instReachingDefsMap.size();
+
+  for (auto &Inst : instReachingDefsMap) {
+    auto RD = Inst.second;
+    outs() << "\n" << Inst.first << "\n RD : ";
+    for (auto defs : RD)
+      outs() << defs << " ";
+    outs() << "\n";
+  }
 
   // Getting all dependency cycles
-  getAllCycles();
+  getAllSCC();
 
-  // Sorting the dependency cycles according to the size of the cycle length
-  std::sort(depCycles.begin(), depCycles.end(),
+  outs() << allSCCs.size();
+
+  std::sort(allSCCs.begin(), allSCCs.end(),
             [](llvm::SmallVector<const llvm::Instruction *, 10> &a,
                llvm::SmallVector<const llvm::Instruction *, 10> &b) {
               return a.size() < b.size();
             });
 
-  SmallMapVector<const Instruction *, Vector, 16> partialInstValMap;
-
-  for (auto &cycles : depCycles) {
-    for (auto defs : cycles)
-      outs() << defs << " ";
+  for (auto &sets : allSCCs) {
+    for (auto insts : sets)
+      outs() << insts << " ";
     outs() << "\n";
   }
 
-  outs() << depCycles[1][0] << "\n";
+  std::map<int, std::vector<int>> SCCAdjList;
 
-  outs() << "RD:\n ";
+  for (int i = 0; i < allSCCs.size(); i++) {
+    auto set = allSCCs[i];
+    for (int j = 0; j < set.size(); j++) {
+      auto RD = instReachingDefsMap[set[j]];
+      if (!RD.empty()) {
+        for (auto defs : RD) {
+          for (int k = 0; k < allSCCs.size(); k++) {
+            if (k == i)
+              continue;
+            auto sccSet = allSCCs[k];
+            if (std::find(sccSet.begin(), sccSet.end(), defs) != sccSet.end()) {
+              // outs() << i << " depends on " << k << "\n";
+              if (SCCAdjList.find(k) == SCCAdjList.end()) {
+                std::vector<int> temp;
+                temp.push_back(i);
+                SCCAdjList[k] = temp;
+              } else {
+                auto temp = SCCAdjList[k];
+                if (std::find(temp.begin(), temp.end(), i) == temp.end())
+                  temp.push_back(i);
+                SCCAdjList[k] = temp;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
-  auto RD = instReachingDefsMap[depCycles[1][0]];
+  for (auto &list : SCCAdjList) {
+    outs() << list.first << ": ";
+    for (auto nodes : list.second) {
+      outs() << nodes << " ";
+    }
+    outs() << "\n\n";
+  }
 
-  for (auto defs : RD)
-    outs() << defs << " ";
+  SmallMapVector<const Instruction *, Vector, 16> partialInstValMap;
 
-  outs() << "\n";
-
-  outs() << depCycles[1][1] << "\n";
-
-  outs() << "RD:\n ";
-
-  auto RD1 = instReachingDefsMap[depCycles[1][1]];
-
-  for (auto defs : RD1)
-    outs() << defs << " ";
-
-  outs() << "\n";
-
-  inst2Vec(*depCycles[1][0], partialInstValMap);
-  // for (auto &Cycles : depCycles) {
-  //   for (auto defs : Cycles) {
+  // for (auto &sCC : allSCCs) {
+  //   for (auto defs : sCC) {
   //     outs() << defs << "\n\n";
   //     partialInstValMap[defs] = {};
   //     inst2Vec(*defs, partialInstValMap);

@@ -60,17 +60,14 @@ private:
   getReachingDefs(const llvm::Instruction *, unsigned i);
 
   llvm::SmallVector<llvm::SmallVector<const llvm::Instruction *, 10>, 10>
-      depCycles;
+      allSCCs;
 
-  void getAllCycles();
+  void getAllSCC();
 
-  void traverseRD(
-      const llvm::Instruction *inst,
-      std::vector<std::pair<const llvm::Instruction *, bool>> &Visited,
-      llvm::SmallVector<const llvm::Instruction *, 10> &InstStack,
-      const llvm::Instruction *parent,
-      llvm::DenseMap<const llvm::Instruction *, const llvm::Instruction *>
-          parentMap);
+  void
+  traverseRD(const llvm::Instruction *inst,
+             std::vector<std::pair<const llvm::Instruction *, bool>> &Visited,
+             llvm::SmallVector<const llvm::Instruction *, 10> &timeStack);
 
   void inst2Vec(const llvm::Instruction &I,
                 llvm::SmallVector<llvm::Function *, 15> &funcStack,
