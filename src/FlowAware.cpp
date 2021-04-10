@@ -182,6 +182,34 @@ void IR2Vec_FA::getAllSCC() {
   }
 }
 
+void topoDFS(int vertex, std::map<int, std::vector<int>> adjList,
+             std::vector<bool> &Visited, std::vector<int> &visitStack) {
+
+  Visited[vertex] = true;
+
+  auto list = adjList[vertex];
+
+  for (auto nodes : list) {
+    if (Visited[nodes] == false)
+      topoDFS(nodes, adjList, Visited, visitStack);
+  }
+
+  visitStack.push_back(vertex);
+}
+
+std::vector<int> topoOrder(std::map<int, std::vector<int>> adjList, int size) {
+  std::vector<bool> Visited(size, false);
+  std::vector<int> visitStack;
+
+  for (auto &nodes : adjList) {
+    if (Visited[nodes.first] == false) {
+      topoDFS(nodes.first, adjList, Visited, visitStack);
+    }
+  }
+
+  return visitStack;
+}
+
 void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
                                            std::ostream *missCount,
                                            std::ostream *cyclicCount) {
@@ -260,35 +288,42 @@ void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
     }
   }
 
-  for (auto &list : SCCAdjList) {
-    outs() << list.first << ": ";
-    for (auto nodes : list.second) {
-      outs() << nodes << " ";
-    }
-    outs() << "\n\n";
-  }
-
-  SmallMapVector<const Instruction *, Vector, 16> partialInstValMap;
-
-  // for (auto &sCC : allSCCs) {
-  //   for (auto defs : sCC) {
-  //     outs() << defs << "\n\n";
-  //     partialInstValMap[defs] = {};
-  //     inst2Vec(*defs, partialInstValMap);
-  //     auto temp = partialInstValMap[defs];
-  //     for (auto k : temp)
-  //       outs() << k << " ";
-  //     outs() << "\n\n";
-  //     if (temp.size() == 0)
-  //       continue;
-  //     solveCyclicDeps(partialInstValMap);
-  //     outs() << "\ndone";
-  //     partialInstValMap.erase(defs);
+  // for (auto &list : SCCAdjList) {
+  //   outs() << list.first << ": ";
+  //   for (auto nodes : list.second) {
+  //     outs() << nodes << " ";
   //   }
+  //   outs() << "\n\n";
   // }
 
-  /*int noOfFunc = 0;
+  auto stack = topoOrder(SCCAdjList, allSCCs.size());
 
+  while (stack.size() != 0) {
+    int idx = stack.back();
+    stack.pop_back();
+    auto component = allSCCs[idx];
+    SmallMapVector<const Instruction *, Vector, 16> partialInstValMap;
+    std::reverse(component.begin(), component.end());
+    for (auto defs : component) {
+      outs() << "Component: " << idx << "\n";
+      outs() << "Component Size: " << component.size() << "\n";
+      outs() << defs << "\n";
+      partialInstValMap[defs] = {};
+      inst2Vec(*defs, partialInstValMap);
+      auto temp = partialInstValMap[defs];
+      // for (auto k : temp)
+      //   outs() << k << " ";
+      // outs() << "\n\n";
+      // if (temp.size() == 0)
+      // continue;
+      outs() << "\ndone";
+      partialInstValMap.erase(defs);
+    }
+  }
+
+  outs() << "\n---Dependencies solved---\n";
+
+  int noOfFunc = 0;
 
   for (auto &f : M) {
     if (!f.isDeclaration()) {
@@ -360,7 +395,7 @@ void IR2Vec_FA::generateFlowAwareEncodings(std::ostream *o,
 
   if (cyclicCount)
     *cyclicCount << (M.getSourceFileName() + "\t" +
-                     std::to_string(cyclicCounter) + "\n");*/
+                     std::to_string(cyclicCounter) + "\n");
 }
 
 Vector IR2Vec_FA::func2Vec(Function &F,
@@ -1003,7 +1038,7 @@ void IR2Vec_FA::inst2Vec(
             isa<Function>(inst->getOperand(i)))
           continue;
         else {
-          auto RD = instReachingDefsMap[&I];
+          auto RD = instReachingDefsMap[inst];
           for (auto i : RD) {
             // Check if value of RD is precomputed
             if (instVecMap.find(i) == instVecMap.end()) {
@@ -1021,6 +1056,10 @@ void IR2Vec_FA::inst2Vec(
         }
       }
     }
+    solveCyclicDeps(partialInstValMap);
+  } else {
+    instVecMap[&I] = instVector;
+    livelinessMap.try_emplace(&I, true);
   }
 }
 
